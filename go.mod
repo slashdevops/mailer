@@ -1,3 +1,3 @@
-module github.com/p2p-b2b/mailer
+module github.com/slashdevops/mailer
 
 go 1.24.3

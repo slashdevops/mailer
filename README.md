@@ -1,8 +1,8 @@
 # mailer
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/p2p-b2b/mailer.svg)](https://pkg.go.dev/github.com/p2p-b2b/mailer)
-![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/p2p-b2b/mailer?style=plastic)
-[![Go Report Card](https://goreportcard.com/badge/github.com/p2p-b2b/mailer)](https://goreportcard.com/report/github.com/p2p-b2b/mailer)
+[![Go Reference](https://pkg.go.dev/badge/github.com/slashdevops/mailer.svg)](https://pkg.go.dev/github.com/slashdevops/mailer)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/slashdevops/mailer?style=plastic)
+[![Go Report Card](https://goreportcard.com/badge/github.com/slashdevops/mailer)](https://goreportcard.com/report/github.com/slashdevops/mailer)
 
 This package provides a robust and concurrent email sending service for Go applications. It allows queueing emails and sending them asynchronously using a pool of workers via a configurable backend (e.g., SMTP).
 
@@ -25,7 +25,7 @@ This package provides a robust and concurrent email sending service for Go appli
 To use this library in your project, install it using `go get`:
 
 ```sh
-go get github.com/p2p-b2b/mailer@latest
+go get github.com/slashdevops/mailer@latest
 ````
 
 ## Components
@@ -77,7 +77,7 @@ import (
   "syscall"
   "time"
 
-  "github.com/p2p-b2b/mailer" // Assuming this is the module path
+  "github.com/slashdevops/mailer" // Assuming this is the module path
 )
 
 func main() {

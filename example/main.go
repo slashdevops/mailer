@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/p2p-b2b/mailer" // Import the library
+	"github.com/slashdevops/mailer" // Import the library
 )
 
 func main() {

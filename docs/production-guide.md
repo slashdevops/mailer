@@ -10,8 +10,24 @@ The package is built around three layers:
 2. **A queue-backed worker service** — `MailService` accepts work asynchronously and dispatches it through a pool of workers.
 3. **A pluggable transport** — any implementation of `MailerService`; the package ships `MailerSMTP`.
 
-```text
-MailContentBuilder ─▶ MailContent ─▶ MailService.Enqueue ─▶ [queue] ─▶ workers ─▶ MailerService.Send
+```mermaid
+flowchart LR
+    subgraph L1["1 · Construction"]
+        B["MailContentBuilder"] --> C["MailContent<br/>(immutable, validated)"]
+    end
+    subgraph L2["2 · Queue + workers"]
+        E["MailService.Enqueue"] --> Q(["buffered queue"])
+        Q --> WP["worker pool"]
+    end
+    subgraph L3["3 · Transport"]
+        I["MailerService.Send"]
+    end
+    C --> E
+    WP --> I
+    I --> S["SMTP / provider API"]
+
+    classDef c fill:#dcfce7,stroke:#15803d,color:#000;
+    class C c;
 ```
 
 ## 2. Service lifecycle
@@ -53,9 +69,37 @@ defer service.Stop() // graceful: drains the queue and waits for workers
 
 `Start()`, `Stop()`, and `Enqueue()` are all safe for concurrent use.
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Ready
+    Ready --> Running: Start()
+    Running --> Draining: Stop()
+    Running --> Cancelled: ctx cancelled
+    Draining --> Stopped: queue drained
+    Cancelled --> Stopped: workers exit
+    Stopped --> [*]
+```
+
 ## 3. Back-pressure and queue sizing
 
 The queue is a bounded, buffered channel with capacity `QueueSize` (defaults to `WorkerCount`). When it is full, `Enqueue` **blocks** until a worker frees a slot or the context is cancelled. This is deliberate back-pressure — the queue never grows unbounded.
+
+```mermaid
+flowchart TD
+    A["Enqueue(content)"] --> B{"service<br/>stopped?"}
+    B -- yes --> E1["return ErrServiceStopped"]
+    B -- no --> C{"queue<br/>has room?"}
+    C -- yes --> D["deliver to queue"] --> OK["return nil"]
+    C -- no --> W{"wait for..."}
+    W -- "slot frees" --> D
+    W -- "ctx cancelled" --> E2["return ctx.Err()"]
+
+    classDef err fill:#fecaca,stroke:#b91c1c,color:#000;
+    classDef ok fill:#dcfce7,stroke:#15803d,color:#000;
+    class E1,E2 err;
+    class OK ok;
+```
 
 - Size `QueueSize` to absorb your expected burst without blocking request handlers.
 - If you cannot tolerate blocking on the request path, enqueue from a background goroutine, or wrap `Enqueue` with a bounded `select`/timeout at the call site.
@@ -80,6 +124,28 @@ Set `Timeout` to bound each `Send`. Every delivery then runs with a context deri
 
 - **Implicit TLS (SMTPS)** — set `ImplicitTLS: true` (implied for port `465`). TLS is negotiated before any SMTP command.
 - **STARTTLS** — on other ports the client upgrades the plaintext connection when the server advertises `STARTTLS`.
+
+```mermaid
+flowchart TD
+    START(["Send()"]) --> DIAL["TCP dial (DialTimeout)"]
+    DIAL --> IMP{"ImplicitTLS<br/>or port 465?"}
+    IMP -- yes --> TLS["TLS handshake now"]
+    IMP -- no --> EHLO
+    TLS --> EHLO["EHLO LocalName"]
+    EHLO --> HAS{"server offers<br/>STARTTLS?"}
+    HAS -- "yes" --> STLS["StartTLS()"] --> AUTH
+    HAS -- "no" --> REQ{"RequireTLS?"}
+    REQ -- "yes" --> FAIL["fail: TLS required<br/>but unavailable"]
+    REQ -- "no" --> AUTH
+    AUTH{"credentials set?"} -- yes --> DOAUTH["AUTH PLAIN"] --> SEND
+    AUTH -- no --> SEND["MAIL / RCPT / DATA / QUIT"]
+    SEND --> DONE(["nil"])
+
+    classDef sec fill:#bfdbfe,stroke:#1d4ed8,color:#000;
+    classDef err fill:#fecaca,stroke:#b91c1c,color:#000;
+    class TLS,STLS sec;
+    class FAIL err;
+```
 
 Recommendations:
 

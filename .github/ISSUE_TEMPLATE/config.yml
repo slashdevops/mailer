@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/slashdevops/mailer/security/policy
+    about: Please report security vulnerabilities privately.
+  - name: Questions and support
+    url: https://github.com/slashdevops/mailer/discussions
+    about: Ask questions and discuss usage with the community.

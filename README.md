@@ -2,180 +2,192 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/slashdevops/mailer.svg)](https://pkg.go.dev/github.com/slashdevops/mailer)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/slashdevops/mailer?style=plastic)
-[![Go Report Card](https://goreportcard.com/badge/github.com/slashdevops/mailer)](https://goreportcard.com/report/github.com/slashdevops/mailer)
+[![license](https://img.shields.io/github/license/slashdevops/mailer.svg)](https://github.com/slashdevops/mailer/blob/main/LICENSE)
+[![Release](https://github.com/slashdevops/mailer/actions/workflows/release.yml/badge.svg)](https://github.com/slashdevops/mailer/actions/workflows/release.yml)
+[![release](https://img.shields.io/github/release/slashdevops/mailer/all.svg)](https://github.com/slashdevops/mailer/releases)
 
-This package provides a robust and concurrent email sending service for Go applications. It allows queueing emails and sending them asynchronously using a pool of workers via a configurable backend (e.g., SMTP).
+`mailer` is a production-oriented Go library for **asynchronous, concurrent email delivery**. It combines a buffered queue, a worker-pool runtime, context-aware lifecycle control, validated message construction, and a pluggable transport (with a batteries-included, TLS-capable SMTP backend) so you can offload email sending from your request path without blocking.
+
+```text
+        Enqueue()                buffered queue              worker pool            MailerService
+producer ─────────▶ ┌──────────────────────────────┐ ─────▶ [w1 w2 … wN] ─────▶ Send(ctx, MailContent)
+                    └──────────────────────────────┘                                    │
+                          back-pressure when full                                       ▼
+                                                                                   SMTP / custom
+```
 
 ## Features
 
-* **Concurrent Sending:** Uses a worker pool to send emails concurrently.
-* **Buffering:** Queues emails in a buffered channel, sized according to the worker count.
-* **Graceful Shutdown:** Supports context cancellation for stopping workers and waits for them to finish processing enqueued items.
-* **Pluggable Backend:** Uses a `MailerService` interface, allowing different sending mechanisms (e.g., SMTP, API-based services). An SMTP implementation (`MailerSMTP`) is included.
-* **Content Validation:** Includes a builder (`MailContentBuilder`) for creating validated `MailContent` with checks for field lengths and allowed MIME types.
-* **Context Propagation:** Leverages `context.Context` for cancellation and timeout propagation throughout the sending process.
-* **Structured Logging:** Uses the standard `log/slog` package for informative logging.
-* **Error Handling:** Provides specific error types (`MailerError`, `MailQueueError`) for better error management.
-* **Customizable Worker Count:** Allows configuring the number of concurrent workers within defined limits.
-* **MIME Type Support:** Supports `text/plain` and `text/html` MIME types.
-* **Sender and Recipient Details:** Allows specifying sender and recipient names along with email addresses.
+- **Concurrent worker pool** — configurable number of workers drain a shared queue.
+- **Back-pressure** — a bounded, buffered queue; `Enqueue` blocks (or fails on context cancellation) when full instead of growing unbounded.
+- **Graceful shutdown** — `Stop()` closes the queue, drains in-flight work, and waits for workers. Context cancellation stops workers immediately.
+- **Pluggable transports** — implement the small `MailerService` interface to send through any provider; `MailContent` exposes read accessors so external backends work.
+- **TLS-capable SMTP** — implicit TLS (SMTPS, port 465) and opportunistic/required STARTTLS, PLAIN auth, configurable dial timeout and EHLO name.
+- **Validated, injection-safe content** — a fluent `MailContentBuilder` validates addresses, MIME type, and lengths, and rejects CR/LF/NUL in header fields (SMTP header-injection protection).
+- **Observability** — structured `log/slog` logging and typed, wrappable errors (`errors.Is`/`errors.As`).
+- **Zero third-party dependencies** — standard library only.
+
+## Requirements
+
+- Go **1.25** or newer.
 
 ## Installation
 
-To use this library in your project, install it using `go get`:
-
 ```sh
 go get github.com/slashdevops/mailer@latest
-````
-
-## Components
-
-* **`MailService`**: The main service that manages the email queue and worker pool.
-* **`MailContent` / `MailContentBuilder`**: Struct and builder for defining email content (sender, recipient, subject, body, MIME type).
-* **`MailerService`**: Interface for the actual email sending logic.
-* **`MailerSMTP`**: An implementation of `MailerService` using standard SMTP.
-
-## Configuration
-
-### `MailService`
-
-Configure the `MailService` using `MailServiceConfig`:
-
-```go
-type MailServiceConfig struct {
-    Ctx         context.Context // Optional: Parent context for cancellation.
-    WorkerCount int             // Number of concurrent sending workers (1-100).
-    Timeout     time.Duration   // Optional: Timeout for operations (currently unused in core service logic but available).
-    Mailer      MailerService   // The backend mailer implementation (e.g., MailerSMTP).
-}
 ```
 
-### `MailerSMTP`
-
-Configure the `MailerSMTP` backend using `MailerSMTPConf`:
-
 ```go
-type MailerSMTPConf struct {
-    SMTPHost string // SMTP server hostname.
-    SMTPPort int    // SMTP server port (e.g., 587, 465, 25).
-    Username string // SMTP username for authentication.
-    Password string // SMTP password for authentication.
-}
+import "github.com/slashdevops/mailer"
 ```
 
-## Usage Example
+## Quick start
 
 ```go
 package main
 
 import (
-  "context"
-  "fmt"
-  "log/slog"
-  "os"
-  "os/signal"
-  "syscall"
-  "time"
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 
-  "github.com/slashdevops/mailer" // Assuming this is the module path
+	"github.com/slashdevops/mailer"
 )
 
 func main() {
-  // --- Configuration ---
-  smtpConf := mailer.MailerSMTPConf{
-    SMTPHost: "smtp.example.com", // Replace with your SMTP host
-    SMTPPort: 587,                // Replace with your SMTP port
-    Username: "user@example.com", // Replace with your SMTP username
-    Password: "your_password",    // Replace with your SMTP password
-  }
+	// 1. Configure a transport (the built-in SMTP backend).
+	smtpMailer, err := mailer.NewMailerSMTP(mailer.MailerSMTPConf{
+		SMTPHost:   os.Getenv("SMTP_HOST"),
+		SMTPPort:   587,
+		Username:   os.Getenv("SMTP_USER"),
+		Password:   os.Getenv("SMTP_PASS"),
+		RequireTLS: true, // refuse to send over an unencrypted connection
+	})
+	if err != nil {
+		slog.Error("invalid SMTP configuration", "error", err)
+		os.Exit(1)
+	}
 
-  smtpMailer, err := mailer.NewMailerSMTP(smtpConf)
-  if err != nil {
-    slog.Error("Failed to configure SMTP mailer", "error", err)
-    os.Exit(1)
-  }
+	// 2. Bind the worker context to OS signals for graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-  // Create a context that can be cancelled
-  appCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-  defer cancel()
+	// 3. Create and start the queue-backed service.
+	service, err := mailer.NewMailService(&mailer.MailServiceConfig{
+		Ctx:         ctx,
+		WorkerCount: 4,
+		QueueSize:   256,
+		Mailer:      smtpMailer,
+	})
+	if err != nil {
+		slog.Error("failed to create mail service", "error", err)
+		os.Exit(1)
+	}
+	service.Start()
 
-  mailServiceConf := &mailer.MailServiceConfig{
-    Ctx:         appCtx,     // Use the cancellable context
-    WorkerCount: 5,          // Number of concurrent workers
-    Mailer:      smtpMailer, // Use the configured SMTP mailer
-  }
+	// 4. Build a validated message and enqueue it.
+	content, err := mailer.NewMailContentBuilder().
+		WithFromName("Operations").
+		WithFromAddress("ops@example.com").
+		WithToName("Customer").
+		WithToAddress("customer@example.com").
+		WithMimeType(mailer.MimeTypeTextPlain).
+		WithSubject("Hello from mailer").
+		WithBody("This is a queued email.").
+		Build()
+	if err != nil {
+		slog.Error("invalid email content", "error", err)
+		os.Exit(1)
+	}
+	if err := service.Enqueue(content); err != nil {
+		slog.Error("failed to enqueue email", "error", err)
+	}
 
-  mailService, err := mailer.NewMailService(mailServiceConf)
-  if err != nil {
-    slog.Error("Failed to create mail service", "error", err)
-    os.Exit(1)
-  }
-
-  // --- Start the Service ---
-  // Start the service with the application context
-  mailService.Start(appCtx)
-  slog.Info("Mail service started. Press Ctrl+C to stop.")
-
-  // --- Enqueue Emails ---
-  go func() {
-    // Example of enqueuing emails
-    for i := 0; i < 10; i++ {
-      subject := fmt.Sprintf("Test Email %d", i+1)
-      body := fmt.Sprintf("This is the body of test email #%d.", i+1)
-
-      content, err := (&mailer.MailContentBuilder{}).
-        WithFromName("Sender Name").
-        WithFromAddress("sender@example.com").
-        WithToName("Recipient Name").
-        WithToAddress("recipient@example.com"). // Replace with a valid recipient
-        WithMimeType("text/plain").
-        WithSubject(subject).
-        WithBody(body).
-        Build()
-
-      if err != nil {
-        slog.Error("Failed to build mail content", "error", err)
-        continue // Skip this email
-      }
-
-      err = mailService.Enqueue(content)
-      if err != nil {
-        // This might happen if the context is cancelled while enqueuing
-        slog.Error("Failed to enqueue email", "error", err)
-        // If context is cancelled, we should probably stop trying to enqueue
-        if appCtx.Err() != nil {
-          break
-        }
-      } else {
-        slog.Info("Email enqueued", "subject", subject)
-      }
-      time.Sleep(500 * time.Millisecond) // Simulate some delay between emails
-    }
-    slog.Info("Finished enqueuing sample emails.")
-  }()
-
-  // --- Wait for Shutdown Signal ---
-  <-appCtx.Done() // Block until context is cancelled (Ctrl+C)
-
-  slog.Info("Shutdown signal received.")
-
-  // --- Stop the Service Gracefully ---
-  // Stop accepting new emails and wait for workers to finish
-  // Note: Stop() closes the channel. If context cancellation is the primary
-  // shutdown mechanism, workers will stop based on <-ctx.Done().
-  // Calling Stop() ensures the channel is closed if not already done by context cancellation propagation.
-  // Depending on exact needs, you might just rely on context cancellation and use Wait().
-  // Using Stop() here is generally safer for ensuring cleanup.
-  mailService.Stop() // This also calls Wait() internally after closing the channel
-
-  slog.Info("Mail service stopped gracefully.")
+	// 5. Shut down gracefully: drain the queue and wait for workers.
+	<-ctx.Done()
+	service.Stop()
 }
 ```
 
-## Contributing
+A complete, runnable program lives in [example/main.go](example/main.go).
 
-Contributions are welcome! Please feel free to submit pull requests or open issues.
+## Concepts
+
+| Type | Responsibility |
+| ---- | -------------- |
+| `MailContentBuilder` / `MailContent` | Build and validate an immutable message. |
+| `MailService` | Queue messages and dispatch them through a worker pool. |
+| `MailerService` (interface) | Transport contract: `Send(ctx, MailContent) error`. |
+| `MailerSMTP` | Standard-library SMTP transport with TLS/STARTTLS and auth. |
+
+### `MailServiceConfig`
+
+| Field | Default | Description |
+| ----- | ------- | ----------- |
+| `Ctx` | `context.Background()` | Governs worker lifetime; cancel to stop workers. |
+| `WorkerCount` | — (required, 1–100) | Number of concurrent workers. |
+| `QueueSize` | `WorkerCount` | Buffered queue capacity (burst absorption). |
+| `Timeout` | `0` (disabled) | Per-message deadline applied to each `Send`. |
+| `Mailer` | — (required) | The transport implementation. |
+
+### `MailerSMTPConf`
+
+| Field | Default | Description |
+| ----- | ------- | ----------- |
+| `SMTPHost` / `SMTPPort` | — (required) | Server host and port (1–65535). |
+| `Username` / `Password` | empty | PLAIN auth credentials; empty disables auth. |
+| `ImplicitTLS` | `false` (implied on 465) | TLS from the first byte (SMTPS). |
+| `RequireTLS` | `false` | Fail rather than send over an unencrypted link. |
+| `TLSConfig` | verify against `SMTPHost`, TLS 1.2+ | Custom `*tls.Config`. |
+| `DialTimeout` | `10s` | TCP connection timeout. |
+| `LocalName` | `localhost` | Name announced in EHLO/HELO. |
+
+## Lifecycle & shutdown semantics
+
+- `Start()` is idempotent and launches `WorkerCount` goroutines.
+- `Enqueue()` is safe for concurrent use. It blocks while the queue is full and returns `ErrServiceStopped` after `Stop()`, or the context error if the context is cancelled first.
+- `Stop()` is idempotent and safe from multiple goroutines. It stops accepting work, closes the queue, and **drains queued messages** before returning.
+- Cancelling `Ctx` stops workers promptly **without** draining; use it for hard shutdown and `Stop()` for graceful shutdown.
+
+## Custom transports
+
+`MailContent` exposes read accessors (`FromName()`, `FromAddress()`, `ToName()`, `ToAddress()`, `MimeType()`, `Subject()`, `Body()`), so any backend can implement `MailerService`:
+
+```go
+type ConsoleMailer struct{}
+
+func (ConsoleMailer) Send(ctx context.Context, m mailer.MailContent) error {
+	slog.Info("would send", "to", m.ToAddress(), "subject", m.Subject())
+	return nil
+}
+```
+
+See [docs/examples/custom-backend.md](docs/examples/custom-backend.md).
+
+## Documentation
+
+- [Docs overview](docs/README.md)
+- [Production guide](docs/production-guide.md) — lifecycle, TLS, worker sizing, observability, testing.
+- [Basic example](docs/examples/basic.md)
+- [Custom backend example](docs/examples/custom-backend.md)
+- [GoDoc reference](https://pkg.go.dev/github.com/slashdevops/mailer)
+
+## Development
+
+```sh
+make test       # go test -race with coverage
+make lint       # golangci-lint
+make cover      # enforce the coverage threshold
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT_GUIDELINES.md](DEVELOPMENT_GUIDELINES.md).
+
+## Security
+
+Report vulnerabilities per [SECURITY.md](SECURITY.md). The builder rejects header-injection attempts (CR/LF/NUL in header fields), and the SMTP backend supports `RequireTLS` to avoid sending credentials or content over unencrypted connections.
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE).

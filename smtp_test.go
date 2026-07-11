@@ -2,11 +2,30 @@ package mailer
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
-	// "net/smtp" // Import needed if mocking smtp.SendMail
+	"time"
 )
+
+func testMailContent(t *testing.T) MailContent {
+	t.Helper()
+	content, err := NewMailContentBuilder().
+		WithFromName("Test Sender").
+		WithFromAddress("sender@example.com").
+		WithToName("Test Recipient").
+		WithToAddress("recipient@example.com").
+		WithMimeType(MimeTypeTextPlain).
+		WithSubject("Basic Send Test").
+		WithBody("This is a basic test.").
+		Build()
+	if err != nil {
+		t.Fatalf("failed to build mail content: %v", err)
+	}
+	return content
+}
 
 func TestNewMailerSMTP_Valid(t *testing.T) {
 	validConf := MailerSMTPConf{
@@ -16,27 +35,46 @@ func TestNewMailerSMTP_Valid(t *testing.T) {
 		Password: "password123",
 	}
 
-	mailer, err := NewMailerSMTP(validConf)
+	m, err := NewMailerSMTP(validConf)
 	if err != nil {
 		t.Fatalf("Expected no error for valid config, but got: %v", err)
 	}
-
-	if mailer == nil {
+	if m == nil {
 		t.Fatal("Expected mailer instance, but got nil")
 	}
 
-	// Check if fields are set correctly
-	if mailer.smtpHost != validConf.SMTPHost {
-		t.Errorf("Expected smtpHost '%s', got '%s'", validConf.SMTPHost, mailer.smtpHost)
+	if m.smtpHost != validConf.SMTPHost {
+		t.Errorf("Expected smtpHost %q, got %q", validConf.SMTPHost, m.smtpHost)
 	}
-	if mailer.smtpPort != validConf.SMTPPort {
-		t.Errorf("Expected smtpPort %d, got %d", validConf.SMTPPort, mailer.smtpPort)
+	if m.smtpPort != validConf.SMTPPort {
+		t.Errorf("Expected smtpPort %d, got %d", validConf.SMTPPort, m.smtpPort)
 	}
-	if mailer.username != validConf.Username {
-		t.Errorf("Expected username '%s', got '%s'", validConf.Username, mailer.username)
+	if m.dialTimeout != DefaultSMTPDialTimeout {
+		t.Errorf("Expected default dial timeout %v, got %v", DefaultSMTPDialTimeout, m.dialTimeout)
 	}
-	if mailer.password != validConf.Password {
-		t.Errorf("Expected password '%s', got '%s'", validConf.Password, mailer.password)
+	if m.localName != DefaultSMTPLocalName {
+		t.Errorf("Expected default local name %q, got %q", DefaultSMTPLocalName, m.localName)
+	}
+}
+
+func TestNewMailerSMTP_DefaultsOverridable(t *testing.T) {
+	m, err := NewMailerSMTP(MailerSMTPConf{
+		SMTPHost:    "smtp.example.com",
+		SMTPPort:    465,
+		DialTimeout: 3 * time.Second,
+		LocalName:   "mail.example.com",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.dialTimeout != 3*time.Second {
+		t.Errorf("expected dial timeout 3s, got %v", m.dialTimeout)
+	}
+	if m.localName != "mail.example.com" {
+		t.Errorf("expected custom local name, got %q", m.localName)
+	}
+	if !m.implicitTLS {
+		t.Error("expected implicit TLS to be enabled for port 465")
 	}
 }
 
@@ -56,8 +94,8 @@ func TestNewMailerSMTP_Invalid(t *testing.T) {
 		expectedError string
 	}{
 		{
-			name:          "SMTPHost too short",
-			modifier:      func(c *MailerSMTPConf) { c.SMTPHost = "a.b" },
+			name:          "SMTPHost empty",
+			modifier:      func(c *MailerSMTPConf) { c.SMTPHost = "" },
 			expectedError: fmt.Sprintf("SMTPHost must be between %d and %d characters", ValidMinSMTPHostLength, ValidMaxSMTPHostLength),
 		},
 		{
@@ -66,29 +104,24 @@ func TestNewMailerSMTP_Invalid(t *testing.T) {
 			expectedError: fmt.Sprintf("SMTPHost must be between %d and %d characters", ValidMinSMTPHostLength, ValidMaxSMTPHostLength),
 		},
 		{
-			name:          "Invalid SMTPPort",
-			modifier:      func(c *MailerSMTPConf) { c.SMTPPort = 26 },
-			expectedError: fmt.Sprintf("SMTPPort must be one of the following: %s", ValidSMTPPorts),
+			name:          "SMTPPort too low",
+			modifier:      func(c *MailerSMTPConf) { c.SMTPPort = 0 },
+			expectedError: fmt.Sprintf("SMTPPort must be between %d and %d", ValidMinSMTPPort, ValidMaxSMTPPort),
 		},
 		{
-			name:          "Username too short",
-			modifier:      func(c *MailerSMTPConf) { c.Username = "" },
-			expectedError: fmt.Sprintf("Username must be between %d and %d characters", ValidMinUsernameLength, ValidMaxUsernameLength),
+			name:          "SMTPPort too high",
+			modifier:      func(c *MailerSMTPConf) { c.SMTPPort = 70000 },
+			expectedError: fmt.Sprintf("SMTPPort must be between %d and %d", ValidMinSMTPPort, ValidMaxSMTPPort),
 		},
 		{
 			name:          "Username too long",
 			modifier:      func(c *MailerSMTPConf) { c.Username = strings.Repeat("a", ValidMaxUsernameLength+1) },
-			expectedError: fmt.Sprintf("Username must be between %d and %d characters", ValidMinUsernameLength, ValidMaxUsernameLength),
-		},
-		{
-			name:          "Password too short",
-			modifier:      func(c *MailerSMTPConf) { c.Password = "pw" },
-			expectedError: fmt.Sprintf("Password must be between %d and %d characters", ValidMinPasswordLength, ValidMaxPasswordLength),
+			expectedError: fmt.Sprintf("Username must be at most %d characters", ValidMaxUsernameLength),
 		},
 		{
 			name:          "Password too long",
 			modifier:      func(c *MailerSMTPConf) { c.Password = strings.Repeat("a", ValidMaxPasswordLength+1) },
-			expectedError: fmt.Sprintf("Password must be between %d and %d characters", ValidMinPasswordLength, ValidMaxPasswordLength),
+			expectedError: fmt.Sprintf("Password must be at most %d characters", ValidMaxPasswordLength),
 		},
 	}
 
@@ -99,73 +132,186 @@ func TestNewMailerSMTP_Invalid(t *testing.T) {
 			_, err := NewMailerSMTP(conf)
 
 			if err == nil {
-				t.Fatalf("Expected error '%s', but got nil", tc.expectedError)
+				t.Fatalf("Expected error %q, but got nil", tc.expectedError)
 			}
-
-			mailerErr, ok := err.(*MailerError)
-			if !ok {
-				t.Fatalf("Expected error type *MailerError, but got %T", err)
+			var mailerErr *MailerError
+			if !errors.As(err, &mailerErr) {
+				t.Fatalf("Expected *MailerError, but got %T", err)
 			}
-
 			if mailerErr.Message != tc.expectedError {
-				t.Errorf("Expected error message '%s', but got '%s'", tc.expectedError, mailerErr.Message)
+				t.Errorf("Expected error message %q, but got %q", tc.expectedError, mailerErr.Message)
 			}
 		})
 	}
 }
 
-// TestSendBasic checks the Send method structure but does not actually send an email.
-// Proper testing of Send requires mocking net/smtp.SendMail or using a test SMTP server.
-func TestSendBasic(t *testing.T) {
-	conf := MailerSMTPConf{
-		SMTPHost: "smtp.example.com", // Use a dummy host
-		SMTPPort: 587,
-		Username: "user",
-		Password: "password",
-	}
-	mailer, err := NewMailerSMTP(conf)
+func TestMailerSMTP_Send_NoAuth(t *testing.T) {
+	server := newFakeSMTPServer(t, fakeSMTPServer{})
+
+	m, err := NewMailerSMTP(MailerSMTPConf{SMTPHost: server.host(), SMTPPort: server.port()})
 	if err != nil {
-		t.Fatalf("Failed to create mailer for basic Send test: %v", err)
+		t.Fatalf("failed to create mailer: %v", err)
 	}
 
-	contentBuilder := MailContentBuilder{}
-	content, err := contentBuilder.
-		WithFromName("Test Sender").
-		WithFromAddress("sender@example.com").
-		WithToName("Test Recipient").
-		WithToAddress("recipient@example.com").
-		WithMimeType("text/plain").
-		WithSubject("Basic Send Test").
-		WithBody("This is a basic test.").
-		Build()
+	if err := m.Send(context.Background(), testMailContent(t)); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+
+	rec := waitForMail(t, server)
+	if rec.usedTLS {
+		t.Error("did not expect TLS on a plain server")
+	}
+	if !strings.Contains(rec.from, "sender@example.com") {
+		t.Errorf("unexpected MAIL FROM: %q", rec.from)
+	}
+	if len(rec.to) != 1 || !strings.Contains(rec.to[0], "recipient@example.com") {
+		t.Errorf("unexpected RCPT TO: %v", rec.to)
+	}
+	if !strings.Contains(rec.data, "Subject: Basic Send Test") {
+		t.Errorf("message missing subject header:\n%s", rec.data)
+	}
+	if !strings.Contains(rec.data, "\r\n") {
+		t.Error("message should use CRLF line endings")
+	}
+}
+
+func TestMailerSMTP_Send_STARTTLSAndAuth(t *testing.T) {
+	server := newFakeSMTPServer(t, fakeSMTPServer{offerTLS: true, offerAuth: true})
+
+	m, err := NewMailerSMTP(MailerSMTPConf{
+		SMTPHost:   server.host(),
+		SMTPPort:   server.port(),
+		Username:   "user",
+		Password:   "secret",
+		RequireTLS: true,
+		TLSConfig:  &tls.Config{InsecureSkipVerify: true},
+	})
 	if err != nil {
-		t.Fatalf("Failed to build mail content for basic Send test: %v", err)
+		t.Fatalf("failed to create mailer: %v", err)
 	}
 
-	// We expect Send to fail because it can't connect to "smtp.example.com",
-	// but we are checking that it doesn't panic and returns a MailerError.
-	err = mailer.Send(context.Background(), content)
+	if err := m.Send(context.Background(), testMailContent(t)); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
 
+	rec := waitForMail(t, server)
+	if !rec.usedTLS {
+		t.Error("expected STARTTLS to secure the connection")
+	}
+	if !rec.authed {
+		t.Error("expected authentication to occur")
+	}
+}
+
+func TestMailerSMTP_Send_ImplicitTLS(t *testing.T) {
+	server := newFakeSMTPServer(t, fakeSMTPServer{implicit: true, offerAuth: true})
+
+	m, err := NewMailerSMTP(MailerSMTPConf{
+		SMTPHost:    server.host(),
+		SMTPPort:    server.port(),
+		Username:    "user",
+		Password:    "secret",
+		ImplicitTLS: true,
+		TLSConfig:   &tls.Config{InsecureSkipVerify: true},
+	})
+	if err != nil {
+		t.Fatalf("failed to create mailer: %v", err)
+	}
+
+	if err := m.Send(context.Background(), testMailContent(t)); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+
+	rec := waitForMail(t, server)
+	if !rec.usedTLS {
+		t.Error("expected implicit TLS connection")
+	}
+}
+
+func TestMailerSMTP_Send_RequireTLSFailsWithoutSupport(t *testing.T) {
+	server := newFakeSMTPServer(t, fakeSMTPServer{offerTLS: false})
+
+	m, err := NewMailerSMTP(MailerSMTPConf{
+		SMTPHost:   server.host(),
+		SMTPPort:   server.port(),
+		RequireTLS: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create mailer: %v", err)
+	}
+
+	err = m.Send(context.Background(), testMailContent(t))
 	if err == nil {
-		t.Error("Expected an error from Send due to invalid host/credentials, but got nil")
-	} else {
-		_, ok := err.(*MailerError)
-		if !ok {
-			t.Errorf("Expected error type *MailerError from Send, but got %T (%v)", err, err)
-		} else {
-			// Optionally check if the error message indicates a failure to send
-			if !strings.Contains(err.Error(), "Failed to send email") {
-				t.Errorf("Expected error message to contain 'Failed to send email', but got: %s", err.Error())
-			}
+		t.Fatal("expected an error when TLS is required but unsupported")
+	}
+	if !strings.Contains(err.Error(), "STARTTLS") {
+		t.Errorf("expected STARTTLS-related error, got %v", err)
+	}
+}
+
+func TestMailerSMTP_Send_ContextCancelled(t *testing.T) {
+	server := newFakeSMTPServer(t, fakeSMTPServer{})
+	m, err := NewMailerSMTP(MailerSMTPConf{SMTPHost: server.host(), SMTPPort: server.port()})
+	if err != nil {
+		t.Fatalf("failed to create mailer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = m.Send(ctx, testMailContent(t))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestMailerSMTP_Send_ConnectionFailure(t *testing.T) {
+	m, err := NewMailerSMTP(MailerSMTPConf{
+		SMTPHost:    "127.0.0.1",
+		SMTPPort:    1, // nothing is listening here
+		DialTimeout: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("failed to create mailer: %v", err)
+	}
+
+	err = m.Send(context.Background(), testMailContent(t))
+	if err == nil {
+		t.Fatal("expected a connection error")
+	}
+	var mailerErr *MailerError
+	if !errors.As(err, &mailerErr) {
+		t.Fatalf("expected *MailerError, got %T", err)
+	}
+	if !strings.Contains(mailerErr.Message, "failed to connect") {
+		t.Errorf("expected connect failure message, got %q", mailerErr.Message)
+	}
+}
+
+func TestBuildMessage(t *testing.T) {
+	content := testMailContent(t)
+	msg := string(buildMessage(content))
+
+	for _, want := range []string{
+		"From: Test Sender <sender@example.com>\r\n",
+		"To: Test Recipient <recipient@example.com>\r\n",
+		"Subject: Basic Send Test\r\n",
+		"MIME-Version: 1.0\r\n",
+		"Content-Type: text/plain; charset=UTF-8\r\n",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q in:\n%s", want, msg)
 		}
 	}
+}
 
-	// Note: To truly test the Send logic (formatting, auth), mocking smtp.SendMail is necessary.
-	// Example (conceptual):
-	// mockSendMail := func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
-	//     // Add checks here for addr, auth, from, to, msg content
-	//     fmt.Println("Mock SendMail called!")
-	//     return nil // or return an error for testing error handling
-	// }
-	// // Inject mockSendMail (requires modifying MailerSMTP or using interfaces/dependency injection)
+func waitForMail(t *testing.T, s *fakeSMTPServer) receivedMail {
+	t.Helper()
+	select {
+	case rec := <-s.received:
+		return rec
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the server to receive mail")
+		return receivedMail{}
+	}
 }

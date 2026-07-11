@@ -1,0 +1,9 @@
+threshold:
+  file: 70
+  package: 70
+  total: 70
+
+# The example program is runnable documentation, not covered by unit tests.
+exclude:
+  paths:
+    - ^example/

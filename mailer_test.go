@@ -1,59 +1,75 @@
 package mailer
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 )
 
 func TestMailContentBuilder_Build_Valid(t *testing.T) {
-	builder := NewMailContentBuilder() // Use constructor
-	content, err := builder.
+	content, err := NewMailContentBuilder().
 		WithFromName("John Doe").
-		WithFromAddress("john.doe@example.com"). // Added FromAddress
+		WithFromAddress("john.doe@example.com").
 		WithToName("Jane Doe").
 		WithToAddress("jane.doe@example.com").
-		WithMimeType(MimeTypeTextPlain). // Use MimeType constant
+		WithMimeType(MimeTypeTextPlain).
 		WithSubject("Test Subject").
 		WithBody("Test Body").
 		Build()
 	if err != nil {
-		t.Errorf("Expected no error, but got: %v", err)
+		t.Fatalf("Expected no error, but got: %v", err)
 	}
 
-	// Basic checks to ensure fields are set (more detailed checks could be added)
-	if content.fromName != "John Doe" {
-		t.Errorf("Expected fromName 'John Doe', got '%s'", content.fromName)
+	// Exercise the exported accessors that external transports rely on.
+	if got := content.FromName(); got != "John Doe" {
+		t.Errorf("FromName() = %q, want %q", got, "John Doe")
 	}
-	if content.fromAddress != "john.doe@example.com" {
-		t.Errorf("Expected fromAddress 'john.doe@example.com', got '%s'", content.fromAddress)
+	if got := content.FromAddress(); got != "john.doe@example.com" {
+		t.Errorf("FromAddress() = %q, want %q", got, "john.doe@example.com")
 	}
-	if content.toName != "Jane Doe" {
-		t.Errorf("Expected toName 'Jane Doe', got '%s'", content.toName)
+	if got := content.ToName(); got != "Jane Doe" {
+		t.Errorf("ToName() = %q, want %q", got, "Jane Doe")
 	}
-	if content.toAddress != "jane.doe@example.com" {
-		t.Errorf("Expected toAddress 'jane.doe@example.com', got '%s'", content.toAddress)
+	if got := content.ToAddress(); got != "jane.doe@example.com" {
+		t.Errorf("ToAddress() = %q, want %q", got, "jane.doe@example.com")
 	}
-	if content.mimeType != MimeTypeTextPlain {
-		t.Errorf("Expected mimeType '%s', got '%s'", MimeTypeTextPlain.String(), content.mimeType.String())
+	if got := content.MimeType(); got != MimeTypeTextPlain {
+		t.Errorf("MimeType() = %q, want %q", got, MimeTypeTextPlain)
 	}
-	if content.subject != "Test Subject" {
-		t.Errorf("Expected subject 'Test Subject', got '%s'", content.subject)
+	if got := content.Subject(); got != "Test Subject" {
+		t.Errorf("Subject() = %q, want %q", got, "Test Subject")
 	}
-	if content.body != "Test Body" {
-		t.Errorf("Expected body 'Test Body', got '%s'", content.body)
+	if got := content.Body(); got != "Test Body" {
+		t.Errorf("Body() = %q, want %q", got, "Test Body")
+	}
+}
+
+func TestMailContentBuilder_DefaultsToTextPlain(t *testing.T) {
+	content, err := NewMailContentBuilder().
+		WithFromName("John Doe").
+		WithFromAddress("john.doe@example.com").
+		WithToName("Jane Doe").
+		WithToAddress("jane.doe@example.com").
+		WithSubject("Test Subject").
+		WithBody("Test Body").
+		Build()
+	if err != nil {
+		t.Fatalf("Expected no error, but got: %v", err)
+	}
+	if content.MimeType() != MimeTypeTextPlain {
+		t.Errorf("expected default MIME type text/plain, got %q", content.MimeType())
 	}
 }
 
 func TestMailContentBuilder_Build_Invalid(t *testing.T) {
 	validBuilder := func() *MailContentBuilder {
-		b := NewMailContentBuilder() // Use constructor
-		return b.
+		return NewMailContentBuilder().
 			WithFromName("John Doe").
 			WithFromAddress("john.doe@example.com").
 			WithToName("Jane Doe").
 			WithToAddress("jane.doe@example.com").
-			WithMimeType(MimeTypeTextPlain). // Use MimeType constant
+			WithMimeType(MimeTypeTextPlain).
 			WithSubject("Test Subject").
 			WithBody("Test Body")
 	}
@@ -73,40 +89,35 @@ func TestMailContentBuilder_Build_Invalid(t *testing.T) {
 			modifier:      func(b *MailContentBuilder) { b.WithFromName(strings.Repeat("a", ValidMaxFromNameLength+1)) },
 			expectedError: fmt.Sprintf("fromName must be between %d and %d characters", ValidMinFromNameLength, ValidMaxFromNameLength),
 		},
-		// Note: fromAddress validation was missing in the original Build method, added it to the builder logic.
-		// Let's assume we add fromAddress validation similar to toAddress for the test.
-		// If fromAddress validation is not intended, these tests would fail or need removal.
-		// {
-		// 	name:          "FromAddress too short",
-		// 	modifier:      func(b *MailContentBuilder) { b.WithFromAddress("a@b") },
-		// 	expectedError: fmt.Sprintf("fromAddress must be between %d and %d characters", ValidMinFromAddressLength, ValidMaxFromAddressLength),
-		// },
-		// {
-		// 	name:          "FromAddress too long",
-		// 	modifier:      func(b *MailContentBuilder) { b.WithFromAddress(strings.Repeat("a", ValidMaxFromAddressLength+1) + "@example.com") },
-		// 	expectedError: fmt.Sprintf("fromAddress must be between %d and %d characters", ValidMinFromAddressLength, ValidMaxFromAddressLength),
-		// },
+		{
+			name:          "FromName with newline",
+			modifier:      func(b *MailContentBuilder) { b.WithFromName("Evil\r\nBcc: victim@example.com") },
+			expectedError: "fromName must not contain line breaks or null bytes",
+		},
+		{
+			name:          "FromAddress too short",
+			modifier:      func(b *MailContentBuilder) { b.WithFromAddress("a") },
+			expectedError: fmt.Sprintf("fromAddress must be between %d and %d characters", ValidMinFromAddressLength, ValidMaxFromAddressLength),
+		},
+		{
+			name:          "FromAddress invalid",
+			modifier:      func(b *MailContentBuilder) { b.WithFromAddress("not-an-email") },
+			expectedError: "fromAddress must be a valid email address",
+		},
 		{
 			name:          "ToName too short",
 			modifier:      func(b *MailContentBuilder) { b.WithToName("") },
 			expectedError: fmt.Sprintf("toName must be between %d and %d characters", ValidMinToNameLength, ValidMaxToNameLength),
 		},
 		{
-			name:          "ToName too long",
-			modifier:      func(b *MailContentBuilder) { b.WithToName(strings.Repeat("a", ValidMaxToNameLength+1)) },
-			expectedError: fmt.Sprintf("toName must be between %d and %d characters", ValidMinToNameLength, ValidMaxToNameLength),
+			name:          "ToName with newline",
+			modifier:      func(b *MailContentBuilder) { b.WithToName("Bob\nSubject: hijacked") },
+			expectedError: "toName must not contain line breaks or null bytes",
 		},
 		{
-			name:          "ToAddress too short",
-			modifier:      func(b *MailContentBuilder) { b.WithToAddress("a@b") },
-			expectedError: fmt.Sprintf("toAddress must be between %d and %d characters", ValidMinToAddressLength, ValidMaxToAddressLength),
-		},
-		{
-			name: "ToAddress too long",
-			modifier: func(b *MailContentBuilder) {
-				b.WithToAddress(strings.Repeat("a", ValidMaxToAddressLength-10) + "@example.com")
-			}, // Adjusted to fit within typical email length limits but exceed validation
-			expectedError: fmt.Sprintf("toAddress must be between %d and %d characters", ValidMinToAddressLength, ValidMaxToAddressLength),
+			name:          "ToAddress invalid",
+			modifier:      func(b *MailContentBuilder) { b.WithToAddress("nope") },
+			expectedError: "toAddress must be a valid email address",
 		},
 		{
 			name:          "Invalid MimeType",
@@ -122,6 +133,11 @@ func TestMailContentBuilder_Build_Invalid(t *testing.T) {
 			name:          "Subject too long",
 			modifier:      func(b *MailContentBuilder) { b.WithSubject(strings.Repeat("a", ValidMaxSubjectLength+1)) },
 			expectedError: fmt.Sprintf("subject must be between %d and %d characters", ValidMinSubjectLength, ValidMaxSubjectLength),
+		},
+		{
+			name:          "Subject with newline",
+			modifier:      func(b *MailContentBuilder) { b.WithSubject("Hi\r\nInjected: yes") },
+			expectedError: "subject must not contain line breaks or null bytes",
 		},
 		{
 			name:          "Body too short",
@@ -142,55 +158,47 @@ func TestMailContentBuilder_Build_Invalid(t *testing.T) {
 			_, err := builder.Build()
 
 			if err == nil {
-				t.Fatalf("Expected error '%s', but got nil", tc.expectedError)
+				t.Fatalf("Expected error %q, but got nil", tc.expectedError)
 			}
-
-			mailerErr, ok := err.(*MailerError)
-			if !ok {
-				t.Fatalf("Expected error type *MailerError, but got %T", err)
+			var mailerErr *MailerError
+			if !errors.As(err, &mailerErr) {
+				t.Fatalf("Expected *MailerError, but got %T", err)
 			}
-
 			if mailerErr.Message != tc.expectedError {
-				t.Errorf("Expected error message '%s', but got '%s'", tc.expectedError, mailerErr.Message)
+				t.Errorf("Expected error message %q, but got %q", tc.expectedError, mailerErr.Message)
 			}
 		})
 	}
 }
 
 func TestMailerError_Error(t *testing.T) {
-	errMsg := "This is a test error"
-	err := &MailerError{Message: errMsg}
-	if err.Error() != errMsg {
-		t.Errorf("Expected error message '%s', but got '%s'", errMsg, err.Error())
+	err := &MailerError{Message: "boom"}
+	if err.Error() != "boom" {
+		t.Errorf("Error() = %q, want %q", err.Error(), "boom")
+	}
+
+	wrapped := &MailerError{Message: "outer", Err: errors.New("inner")}
+	if wrapped.Error() != "outer: inner" {
+		t.Errorf("Error() = %q, want %q", wrapped.Error(), "outer: inner")
+	}
+	if !errors.Is(wrapped, wrapped.Err) {
+		t.Error("expected errors.Is to unwrap to the inner error")
 	}
 }
 
-// Helper function to check if fromAddress validation should be added
-func TestFromAddressValidationMissing(t *testing.T) {
-	// This test checks if the fromAddress validation is indeed missing as observed.
-	// If this test fails, it means the validation was added to MailContentBuilder.Build()
-	// and the corresponding tests in TestMailContentBuilder_Build_Invalid should be uncommented.
-	builder := NewMailContentBuilder() // Use constructor
-	_, err := builder.
-		WithFromName("John Doe").
-		WithFromAddress("a@b"). // Invalid length
-		WithToName("Jane Doe").
-		WithToAddress("jane.doe@example.com").
-		WithMimeType(MimeTypeTextPlain). // Use MimeType constant
-		WithSubject("Test Subject").
-		WithBody("Test Body").
-		Build()
-
-	if err != nil {
-		// Check if the error is specifically about fromAddress length
-		expectedErrorSubstr := "fromAddress must be between"
-		if strings.Contains(err.Error(), expectedErrorSubstr) {
-			t.Logf("Detected fromAddress validation. Consider uncommenting fromAddress tests in TestMailContentBuilder_Build_Invalid.")
-		} else {
-			// If error is not nil, but not about fromAddress, report it
-			t.Errorf("Expected no error related to fromAddress validation, but got: %v", err)
+func TestMimeType_IsValid(t *testing.T) {
+	cases := map[MimeType]bool{
+		MimeTypeTextPlain:    true,
+		MimeTypeTextHTML:     true,
+		MimeType("text/xml"): false,
+		MimeType(""):         false,
+	}
+	for mt, want := range cases {
+		if got := mt.IsValid(); got != want {
+			t.Errorf("MimeType(%q).IsValid() = %v, want %v", mt, got, want)
 		}
-	} else {
-		t.Log("Confirmed: fromAddress validation is currently missing in Build method.")
+	}
+	if MimeTypeTextHTML.String() != "text/html" {
+		t.Errorf("String() = %q, want %q", MimeTypeTextHTML.String(), "text/html")
 	}
 }

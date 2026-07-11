@@ -1,0 +1,59 @@
+version: "2"
+linters:
+  # https://golangci-lint.run/usage/linters/#enabled-by-default
+  enable:
+    - errcheck
+    - ineffassign
+    - staticcheck
+    - unused
+
+  # https://golangci-lint.run/usage/linters/#disabled-by-default
+  disable:
+    - govet
+    - godot
+    - wsl
+    - testpackage
+    - whitespace
+    - tagalign
+    - nosprintfhostport
+    - nlreturn
+    - nestif
+    - mnd
+    - misspell
+    - lll
+    - godox
+    - funlen
+    - gochecknoinits
+    - depguard
+    - goconst
+    - dupword
+    - cyclop
+    - gocognit
+    - maintidx
+    - gocyclo
+    - dupl
+
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+      disable-default-exclusions: true
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (net.Conn).Close
+        - (*net/smtp.Client).Close
+        - io/ioutil.ReadFile
+        - io.Copy(*bytes.Buffer)
+        - io.Copy(os.Stdout)
+        - (io.Writer).Write
+        - (*bufio.Writer).Write
+        - (*encoding/json.Encoder).Encode
+        - os.Setenv
+        - os.Unsetenv
+        - fmt.Printf
+        - fmt.Print
+        - fmt.Println
+        - fmt.Fprint
+        - fmt.Fprintf
+        - (*strings.Builder).WriteString

@@ -8,12 +8,32 @@
 
 `mailer` is a production-oriented Go library for **asynchronous, concurrent email delivery**. It combines a buffered queue, a worker-pool runtime, context-aware lifecycle control, validated message construction, and a pluggable transport (with a batteries-included, TLS-capable SMTP backend) so you can offload email sending from your request path without blocking.
 
-```text
-        Enqueue()                buffered queue              worker pool            MailerService
-producer ─────────▶ ┌──────────────────────────────┐ ─────▶ [w1 w2 … wN] ─────▶ Send(ctx, MailContent)
-                    └──────────────────────────────┘                                    │
-                          back-pressure when full                                       ▼
-                                                                                   SMTP / custom
+```mermaid
+flowchart LR
+    P["Producers<br/>(HTTP handlers, jobs)"]
+    B["MailContentBuilder<br/>validate & build"]
+    Q(["Buffered queue<br/>cap = QueueSize"])
+    subgraph Pool["Worker pool (WorkerCount)"]
+        W1["worker 1"]
+        W2["worker 2"]
+        WN["worker N"]
+    end
+    T{{"MailerService<br/>Send(ctx, MailContent)"}}
+    SMTP["MailerSMTP<br/>(TLS / STARTTLS)"]
+    CUS["Custom backend<br/>(SES, SendGrid, …)"]
+
+    P -->|"NewMailContentBuilder()"| B
+    B -->|"MailContent"| P
+    P -->|"Enqueue() — blocks when full"| Q
+    Q --> W1 & W2 & WN
+    W1 & W2 & WN --> T
+    T --> SMTP
+    T --> CUS
+
+    classDef q fill:#fde68a,stroke:#b45309,color:#000;
+    classDef t fill:#bfdbfe,stroke:#1d4ed8,color:#000;
+    class Q q;
+    class T t;
 ```
 
 ## Features
@@ -144,7 +164,61 @@ A complete, runnable program lives in [example/main.go](example/main.go).
 | `DialTimeout` | `10s` | TCP connection timeout. |
 | `LocalName` | `localhost` | Name announced in EHLO/HELO. |
 
+## How a message flows
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor App as Application
+    participant Svc as MailService
+    participant Q as Queue (channel)
+    participant W as Worker
+    participant M as MailerService (SMTP)
+    participant Srv as Mail server
+
+    App->>Svc: Start()
+    Svc->>W: spawn WorkerCount goroutines
+    App->>Svc: Enqueue(content)
+    alt queue has room
+        Svc->>Q: content
+        Svc-->>App: nil
+    else queue full
+        Note over Svc,Q: Enqueue blocks (back-pressure)<br/>until a slot frees or ctx is cancelled
+    end
+    W->>Q: receive content
+    W->>M: Send(ctx, content)
+    M->>Srv: dial + (STARTTLS/TLS) + AUTH + DATA
+    Srv-->>M: 250 OK
+    M-->>W: nil / *MailerError
+    App->>Svc: Stop()
+    Svc->>Q: close()
+    W->>Q: drain remaining
+    W-->>Svc: workers exit
+    Svc-->>App: returns after drain
+```
+
 ## Lifecycle & shutdown semantics
+
+```mermaid
+stateDiagram-v2
+    [*] --> Ready: NewMailService()
+    Ready --> Running: Start()
+    Running --> Running: Enqueue() / Send()
+    Running --> Draining: Stop()
+    Draining --> Stopped: queue drained, workers exited
+    Running --> Cancelled: ctx cancelled
+    Cancelled --> Stopped: workers exit (no drain)
+    Stopped --> [*]
+
+    note right of Draining
+        graceful: queued
+        messages are sent
+    end note
+    note right of Cancelled
+        hard stop: in-flight
+        sends observe ctx.Done()
+    end note
+```
 
 - `Start()` is idempotent and launches `WorkerCount` goroutines.
 - `Enqueue()` is safe for concurrent use. It blocks while the queue is full and returns `ErrServiceStopped` after `Stop()`, or the context error if the context is cancelled first.

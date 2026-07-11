@@ -2,6 +2,12 @@
 
 This example shows how to wire `mailer` into a small service, step by step.
 
+```mermaid
+flowchart LR
+    S1["1 · NewMailerSMTP<br/>(transport)"] --> S2["2 · NewMailService<br/>+ Start()"]
+    S2 --> S3["3 · Build message<br/>(validated)"] --> S4["4 · Enqueue()"] --> S5["5 · Stop()<br/>(drain + wait)"]
+```
+
 ## Step 1: Create the SMTP backend
 
 `RequireTLS` makes delivery fail rather than send credentials over an unencrypted

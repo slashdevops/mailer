@@ -11,6 +11,39 @@ type MailerService interface {
 }
 ```
 
+```mermaid
+classDiagram
+    class MailerService {
+        <<interface>>
+        +Send(ctx, MailContent) error
+    }
+    class MailContent {
+        +FromName() string
+        +FromAddress() string
+        +ToName() string
+        +ToAddress() string
+        +MimeType() MimeType
+        +Subject() string
+        +Body() string
+    }
+    class MailerSMTP
+    class APIMailer
+    class RecordingMailer
+    class RetryMailer {
+        -next MailerService
+    }
+
+    MailerService <|.. MailerSMTP : implements
+    MailerService <|.. APIMailer : implements
+    MailerService <|.. RecordingMailer : implements
+    MailerService <|.. RetryMailer : implements
+    RetryMailer o-- MailerService : wraps
+    MailerService ..> MailContent : reads
+```
+
+The `RetryMailer` above shows the recommended way to layer policy: a
+`MailerService` that **wraps** another one (see "Layer policy by wrapping").
+
 `MailContent` is immutable and exposes read accessors, so your backend can read
 every field it needs:
 
@@ -95,6 +128,39 @@ service, err := mailer.NewMailService(&mailer.MailServiceConfig{
 - **Return meaningful errors.** They are logged by the workers; wrap the cause so `errors.Is`/`errors.As` work upstream.
 - **Be safe for concurrent use.** Workers call `Send` from multiple goroutines simultaneously — share an `*http.Client`, avoid per-call global mutation.
 - **Layer policy by wrapping.** Implement retries, circuit breaking, or dead-letter handling in a `MailerService` that wraps another one, keeping the queue simple.
+
+## Example: a retrying wrapper
+
+```go
+// RetryMailer retries a wrapped MailerService with a fixed backoff.
+type RetryMailer struct {
+	Next     mailer.MailerService
+	Attempts int
+	Backoff  time.Duration
+}
+
+func (m *RetryMailer) Send(ctx context.Context, c mailer.MailContent) error {
+	var err error
+	for attempt := 1; attempt <= m.Attempts; attempt++ {
+		if err = m.Next.Send(ctx, c); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(m.Backoff):
+		}
+	}
+	return err
+}
+```
+
+Compose it around any transport — the queue is unaware of the added policy:
+
+```go
+backend := &RetryMailer{Next: smtpMailer, Attempts: 3, Backoff: time.Second}
+service, _ := mailer.NewMailService(&mailer.MailServiceConfig{WorkerCount: 4, Mailer: backend})
+```
 
 ## Example: a test double
 

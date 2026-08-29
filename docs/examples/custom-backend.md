@@ -1,9 +1,12 @@
 # Custom backend example
 
 The `MailService` queue and worker pool are transport-agnostic. To deliver
-through something other than SMTP — a provider API (Amazon SES, SendGrid,
-Postmark), a message bus, or a test double — implement the `MailerService`
-interface:
+through something other than the built-in transports — another provider API
+(Amazon SES, SendGrid, Postmark), a message bus, or a test double — implement
+the `MailerService` interface:
+
+> Mailgun no longer needs this: `MailerMailgun` ships with the library. Read it
+> (`mailgun.go`) as a worked example of everything below.
 
 ```go
 type MailerService interface {

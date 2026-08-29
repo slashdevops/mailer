@@ -20,6 +20,7 @@ flowchart LR
     end
     T{{"MailerService<br/>Send(ctx, MailContent)"}}
     SMTP["MailerSMTP<br/>(TLS / STARTTLS)"]
+    MG["MailerMailgun<br/>(HTTPS messages API)"]
     CUS["Custom backend<br/>(SES, SendGrid, …)"]
 
     P -->|"NewMailContentBuilder()"| B
@@ -28,6 +29,7 @@ flowchart LR
     Q --> W1 & W2 & WN
     W1 & W2 & WN --> T
     T --> SMTP
+    T --> MG
     T --> CUS
 
     classDef q fill:#fde68a,stroke:#b45309,color:#000;
@@ -43,6 +45,7 @@ flowchart LR
 - **Graceful shutdown** — `Stop()` closes the queue, drains in-flight work, and waits for workers. Context cancellation stops workers immediately.
 - **Pluggable transports** — implement the small `MailerService` interface to send through any provider; `MailContent` exposes read accessors so external backends work.
 - **TLS-capable SMTP** — implicit TLS (SMTPS, port 465) and opportunistic/required STARTTLS, PLAIN auth, configurable dial timeout and EHLO name.
+- **Mailgun HTTP API** — `MailerMailgun` posts to the messages endpoint over HTTPS, which reaches providers from environments that block outbound SMTP ports and reports delivery failures synchronously instead of by bounce. Bring your own `*http.Client` to inherit an existing timeout and pool.
 - **Validated, injection-safe content** — a fluent `MailContentBuilder` validates addresses, MIME type, and lengths, and rejects CR/LF/NUL in header fields (SMTP header-injection protection).
 - **Observability** — structured `log/slog` logging and typed, wrappable errors (`errors.Is`/`errors.As`).
 - **Zero third-party dependencies** — standard library only.
@@ -77,7 +80,8 @@ import (
 )
 
 func main() {
-	// 1. Configure a transport (the built-in SMTP backend).
+	// 1. Configure a transport (the built-in SMTP backend; see
+	//    NewMailerMailgun for the HTTP API alternative).
 	smtpMailer, err := mailer.NewMailerSMTP(mailer.MailerSMTPConf{
 		SMTPHost:   os.Getenv("SMTP_HOST"),
 		SMTPPort:   587,

@@ -5,7 +5,7 @@ for Go applications.
 It features a queue-based dispatcher (MailService) backed by a pool of worker
 goroutines, so applications can enqueue validated messages quickly without
 blocking on delivery. Delivery is performed by any implementation of the
-MailerService interface; a standard-library SMTP transport (MailerSMTP) with
+MailerService interface; two standard-library transports -- SMTP (MailerSMTP) with
 TLS/STARTTLS and authentication is included.
 
 Key features:
@@ -15,6 +15,9 @@ Key features:
   - Graceful shutdown (queue drain) and context-driven hard shutdown.
   - Pluggable transports via the MailerService interface; MailContent exposes
     read accessors so external backends can read every field.
+  - Mailgun transport (MailerMailgun) over the messages HTTP API, for
+    environments where outbound SMTP ports are blocked and for synchronous
+    delivery errors.
   - SMTP transport with implicit TLS (SMTPS), opportunistic/required STARTTLS,
     PLAIN auth, and a configurable dial timeout and EHLO name.
   - Validated, injection-safe message construction via MailContentBuilder

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MailerMailgun`, a second built-in transport delivering through Mailgun's
+  messages HTTP API over HTTPS. It reaches providers from environments that
+  block outbound SMTP ports and reports delivery failures synchronously rather
+  than by bounce. Accepts an optional `*http.Client` so a caller's existing
+  timeout, retry policy and connection pool are inherited rather than
+  duplicated; refuses a non-`https` URL, because the API key travels as a
+  basic-auth header on every request.
 - Exported read accessors on `MailContent` (`FromName`, `FromAddress`, `ToName`,
   `ToAddress`, `MimeType`, `Subject`, `Body`) so external `MailerService`
   implementations can read message fields.
